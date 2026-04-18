@@ -42,7 +42,7 @@ def train():
         hsv_v=0.4,
     )
 
-    best = Path("runs/detect/chess_train/weights/best.pt")
+    best = Path(results.save_dir) / "weights" / "best.pt"
     if best.exists():
         MODEL_DIR.mkdir(exist_ok=True)
         dest = MODEL_DIR / "best.pt"
