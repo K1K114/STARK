@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).parent.parent
 DATA_YAML = REPO_ROOT / "data" / "data.yaml"
 MODEL_DIR = REPO_ROOT / "model"
 
-EPOCHS = 100
+EPOCHS = 10
 IMG_SIZE = 640
 BATCH_SIZE = 16
 BASE_MODEL = "yolov8s.pt"   # start with s; easier than m
