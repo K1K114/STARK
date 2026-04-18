@@ -1,13 +1,8 @@
 """
-Train a YOLOv8s model on the chess piece dataset from Roboflow.
+Train a YOLOv8s model on the chess piece dataset locally downloaded
 
 Prerequisites:
     1. pip install -r requirements.txt
-    2. Create a .env file in the repo root with:
-          ROBOFLOW_API_KEY=your_key_here
-          ROBOFLOW_WORKSPACE=your-workspace-slug
-          ROBOFLOW_PROJECT=your-project-slug
-          ROBOFLOW_VERSION=1
 
 Usage:
     python training/train.py
@@ -26,7 +21,7 @@ EPOCHS = 100
 IMG_SIZE = 640
 BATCH_SIZE = 16
 BASE_MODEL = "yolov8s.pt"   # start with s; easier than m
-DEVICE = 0                  # GPU 0
+DEVICE = "cpu"                  # GPU 0
 
 def train():
     print(f"Training on dataset: {DATA_YAML}")
