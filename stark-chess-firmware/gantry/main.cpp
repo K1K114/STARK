@@ -1,187 +1,182 @@
-/**
- * StarkHacks 2026 — Gantry Controller Firmware
- * Target: ESP32 (Arduino framework via PlatformIO)
- *
- * Serial protocol (115200 baud, newline-terminated):
- *   Host → ESP32:
- *     MOVE <from> <to>   e.g. "MOVE e2 e4"
- *     CAPTURE <square>   e.g. "CAPTURE d5"  (remove piece to side pocket)
- *     RETURN <square>    e.g. "RETURN e4"   (illegal move — put piece back)
- *     HOME               return to rest position
- *
- *   ESP32 → Host:
- *     MOVING             command acknowledged, gantry started
- *     DONE               move complete, electromagnet released
- *     ERROR <msg>        something went wrong
- *
- * Build with PlatformIO:
- *   cd stark-chess-firmware
- *   pio run --target upload
- */
-
 #include <Arduino.h>
+#include "Stepper_Driver.h"
 
-// --- Pin assignments (adjust for your wiring) ---
-#define MAGNET_PIN    26    // electromagnet relay/MOSFET gate
-#define STEPPER_X_STEP  18
-#define STEPPER_X_DIR   19
-#define STEPPER_Y_STEP  21
-#define STEPPER_Y_DIR   22
-#define ENDSTOP_X       34
-#define ENDSTOP_Y       35
+#define STEP_PIN1    4
+#define DIR_PIN1     5
+#define EN_PIN1      6
+#define STEP_PIN2    19
+#define DIR_PIN2     20
+#define EN_PIN2      21
+#define R_SENSE     0.11f  // TMC2209 typical sense resistor
 
-// --- Board geometry ---
-// Distance in stepper steps between adjacent squares.
-// Calibrate by measuring your actual board and gear ratio.
-#define STEPS_PER_SQUARE  200
+// Motor 1 UART pins (TX=17, RX=16)
+#define TMC1_TX_PIN  17
+#define TMC1_RX_PIN  16
 
-// --- State ---
-String inputBuffer = "";
+// Motor 2 UART pins (TX=43, RX=44)
+#define TMC2_TX_PIN  43
+#define TMC2_RX_PIN  44
 
-// --- Forward declarations ---
-void homeGantry();
-void moveToSquare(int col, int row);
-void setMagnet(bool on);
-bool parseSquare(const String& sq, int& col, int& row);
-void handleCommand(const String& cmd);
+#define LEFT_PIN 1
+#define RIGHT_PIN 2
+#define UP_PIN 42
+#define DOWN_PIN 41
 
-// ---------------------------------------------------------------
+#define UART_BAUDRATE 115200
+#define STEPS_PER_REV 3200
+#define DRIVER_CURRENT_MA 800
+#define DRIVER_MICROSTEPS 16
+#define STEP_HALF_PERIOD_US 450
 
-void setup() {
+enum MotionMode {
+  MOTION_NONE,
+  MOTION_LEFT,
+  MOTION_RIGHT,
+  MOTION_UP,
+  MOTION_DOWN
+};
+
+StepperDriver motor1;
+StepperDriver motor2;
+static MotionMode currentMotion = MOTION_NONE;
+static bool stepLevel = false;
+static uint32_t lastStepMicros = 0;
+
+static MotionMode readMotionFromButtons() {
+  if (digitalRead(LEFT_PIN) == LOW) return MOTION_LEFT;
+  if (digitalRead(RIGHT_PIN) == LOW) return MOTION_RIGHT;
+  if (digitalRead(UP_PIN) == LOW) return MOTION_UP;
+  if (digitalRead(DOWN_PIN) == LOW) return MOTION_DOWN;
+  return MOTION_NONE;
+}
+
+static void applyDirections(MotionMode mode) {
+  switch (mode) {
+    case MOTION_LEFT:
+      // LEFT: M1 CW, M2 CW
+      Stepper_SetDirection(&motor1, true);
+      Stepper_SetDirection(&motor2, true);
+      break;
+    case MOTION_RIGHT:
+      // RIGHT: M1 CCW, M2 CCW
+      Stepper_SetDirection(&motor1, false);
+      Stepper_SetDirection(&motor2, false);
+      break;
+    case MOTION_UP:
+      // UP: M1 CW, M2 CCW
+      Stepper_SetDirection(&motor1, true);
+      Stepper_SetDirection(&motor2, false);
+      break;
+    case MOTION_DOWN:
+      // DOWN: M1 CCW, M2 CW
+      Stepper_SetDirection(&motor1, false);
+      Stepper_SetDirection(&motor2, true);
+      break;
+    case MOTION_NONE:
+    default:
+      break;
+  }
+}
+
+static void runSteppersWhileHeld() {
+  MotionMode requested = readMotionFromButtons();
+
+  if (requested != currentMotion) {
+    currentMotion = requested;
+    stepLevel = false;
+    digitalWrite(motor1.step_pin, LOW);
+    digitalWrite(motor2.step_pin, LOW);
+    lastStepMicros = micros();
+
+    if (currentMotion != MOTION_NONE) {
+      applyDirections(currentMotion);
+    }
+  }
+
+  if (currentMotion == MOTION_NONE) {
+    return;
+  }
+
+  uint32_t now = micros();
+  if ((uint32_t)(now - lastStepMicros) >= STEP_HALF_PERIOD_US) {
+    lastStepMicros = now;
+    stepLevel = !stepLevel;
+    digitalWrite(motor1.step_pin, stepLevel ? HIGH : LOW);
+    digitalWrite(motor2.step_pin, stepLevel ? HIGH : LOW);
+  }
+}
+
+static void init_stepper_motors() {
+  bool ok1 = Stepper_Init(
+    &motor1,
+    &Serial1,
+    TMC1_RX_PIN,
+    TMC1_TX_PIN,
+    0b00,
+    STEP_PIN1,
+    DIR_PIN1,
+    EN_PIN1,
+    false,
+    true,
+    STEPS_PER_REV,
+    R_SENSE,
+    DRIVER_CURRENT_MA,
+    DRIVER_MICROSTEPS
+  );
+
+  bool ok2 = Stepper_Init(
+    &motor2,
+    &Serial2,
+    TMC2_RX_PIN,
+    TMC2_TX_PIN,
+    0b00,
+    STEP_PIN2,
+    DIR_PIN2,
+    EN_PIN2,
+    false,
+    true,
+    STEPS_PER_REV,
+    R_SENSE,
+    DRIVER_CURRENT_MA,
+    DRIVER_MICROSTEPS
+  );
+
+  if (!ok1 || !ok2) {
+    Serial.println("Stepper init failed");
+    return;
+  }
+
+  bool begin1 = Stepper_Begin(&motor1, UART_BAUDRATE);
+  bool begin2 = Stepper_Begin(&motor2, UART_BAUDRATE);
+
+  if (!begin1 || !begin2) {
+    Serial.println("Stepper UART/TMC begin failed");
+    return;
+  }
+
+  Stepper_Enable(&motor1);
+  Stepper_Enable(&motor2);
+
+  Serial.print("Motor1 test_connection: ");
+  Serial.println(Stepper_TestConnection(&motor1));
+  Serial.print("Motor2 test_connection: ");
+  Serial.println(Stepper_TestConnection(&motor2));
+  Serial.println("Both steppers initialized");
+}
+
+void setup() { 
+  pinMode(LEFT_PIN, INPUT_PULLUP);
+  pinMode(RIGHT_PIN, INPUT_PULLUP);
+  pinMode(UP_PIN, INPUT_PULLUP);
+  pinMode(DOWN_PIN, INPUT_PULLUP);
+
   Serial.begin(115200);
+  Serial.println("Gantry startup");
 
-  pinMode(MAGNET_PIN, OUTPUT);
-  pinMode(STEPPER_X_STEP, OUTPUT);
-  pinMode(STEPPER_X_DIR, OUTPUT);
-  pinMode(STEPPER_Y_STEP, OUTPUT);
-  pinMode(STEPPER_Y_DIR, OUTPUT);
-  pinMode(ENDSTOP_X, INPUT_PULLUP);
-  pinMode(ENDSTOP_Y, INPUT_PULLUP);
-
-  setMagnet(false);
-  homeGantry();
-
-  Serial.println("READY");
+  init_stepper_motors();
 }
 
-void loop() {
-  // Read serial one character at a time into buffer
-  while (Serial.available()) {
-    char c = (char)Serial.read();
-    if (c == '\n') {
-      inputBuffer.trim();
-      if (inputBuffer.length() > 0) {
-        handleCommand(inputBuffer);
-      }
-      inputBuffer = "";
-    } else {
-      inputBuffer += c;
-    }
-  }
+void loop() { 
+  runSteppersWhileHeld();
 }
 
-// ---------------------------------------------------------------
-// Command dispatcher
-// ---------------------------------------------------------------
-
-void handleCommand(const String& cmd) {
-  Serial.println("MOVING");
-
-  if (cmd == "HOME") {
-    homeGantry();
-    Serial.println("DONE");
-    return;
-  }
-
-  if (cmd.startsWith("MOVE ")) {
-    // "MOVE e2 e4"
-    String parts = cmd.substring(5);
-    int space = parts.indexOf(' ');
-    if (space < 0) { Serial.println("ERROR bad MOVE syntax"); return; }
-    String fromSq = parts.substring(0, space);
-    String toSq   = parts.substring(space + 1);
-
-    int fc, fr, tc, tr;
-    if (!parseSquare(fromSq, fc, fr) || !parseSquare(toSq, tc, tr)) {
-      Serial.println("ERROR bad square");
-      return;
-    }
-
-    moveToSquare(fc, fr);
-    setMagnet(true);
-    delay(200);            // let magnet grab the piece
-    moveToSquare(tc, tr);
-    setMagnet(false);
-    delay(200);            // let piece settle before releasing
-    Serial.println("DONE");
-    return;
-  }
-
-  if (cmd.startsWith("CAPTURE ")) {
-    // Move captured piece to off-board pocket at (-1, -1)
-    String sq = cmd.substring(8);
-    int col, row;
-    if (!parseSquare(sq, col, row)) { Serial.println("ERROR bad square"); return; }
-    moveToSquare(col, row);
-    setMagnet(true);
-    delay(200);
-    // Move to pocket — adjust coordinates for your board layout
-    moveToSquare(-1, -1);
-    setMagnet(false);
-    delay(200);
-    Serial.println("DONE");
-    return;
-  }
-
-  if (cmd.startsWith("RETURN ")) {
-    // Same as CAPTURE but moves piece back from where it is now —
-    // the host is responsible for calling MOVE first then RETURN if needed.
-    // For now just report done; implement as needed.
-    Serial.println("DONE");
-    return;
-  }
-
-  Serial.println("ERROR unknown command");
-}
-
-// ---------------------------------------------------------------
-// Motion primitives
-// ---------------------------------------------------------------
-
-void homeGantry() {
-  // Drive X then Y toward endstops
-  // TODO: implement endstop-based homing for your stepper driver
-  // Placeholder: just delay to simulate homing time
-  delay(500);
-}
-
-void moveToSquare(int col, int row) {
-  // TODO: implement actual stepper motion.
-  // col: 0 = a-file, 7 = h-file; row: 0 = rank 1, 7 = rank 8
-  // For now this is a stub — replace with your CoreXY / Cartesian kinematics.
-  long targetX = col * STEPS_PER_SQUARE;
-  long targetY = row * STEPS_PER_SQUARE;
-
-  // Drive steppers to (targetX, targetY)
-  // ... your motion code here ...
-  delay(300);  // placeholder delay
-}
-
-void setMagnet(bool on) {
-  digitalWrite(MAGNET_PIN, on ? HIGH : LOW);
-}
-
-// ---------------------------------------------------------------
-// Square parsing: "e4" → col=4, row=3
-// ---------------------------------------------------------------
-
-bool parseSquare(const String& sq, int& col, int& row) {
-  if (sq.length() < 2) return false;
-  char file = sq[0];  // 'a'–'h'
-  char rank = sq[1];  // '1'–'8'
-  if (file < 'a' || file > 'h') return false;
-  if (rank < '1' || rank > '8') return false;
-  col = file - 'a';   // 0–7
-  row = rank - '1';   // 0–7
-  return true;
-}
