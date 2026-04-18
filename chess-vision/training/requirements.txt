@@ -1,0 +1,7 @@
+# Training dependencies (superset of root requirements.txt)
+ultralytics>=8.0.0
+roboflow>=1.1.0
+python-dotenv>=1.0.0
+torch>=2.0.0
+numpy>=1.24.0
+Pillow>=10.0.0

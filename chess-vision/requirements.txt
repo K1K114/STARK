@@ -1,0 +1,9 @@
+ultralytics>=8.0.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+roboflow>=1.1.0
+supervision>=0.18.0
+pyserial>=3.5
+python-chess>=1.999
+Pillow>=10.0.0
+python-dotenv>=1.0.0

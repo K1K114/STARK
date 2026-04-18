@@ -1,0 +1,8 @@
+python-chess>=1.999
+pyserial>=3.5
+opencv-python>=4.8.0
+numpy>=1.24.0
+python-dotenv>=1.0.0
+
+# Vision deps (also installed in chess-vision, listed here for completeness)
+ultralytics>=8.0.0
