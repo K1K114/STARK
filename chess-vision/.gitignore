@@ -16,6 +16,9 @@ data/calibration_images/*
 
 # Training artifacts
 runs/
+!runs/detect/chess_train/results.csv
+!runs/detect/chess_train/confusion_matrix.png
+!runs/detect/chess_train/results.png
 wandb/
 
 # Python
