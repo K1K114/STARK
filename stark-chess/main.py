@@ -3,9 +3,11 @@ StarkHacks 2026 — Autonomous Chess Board
 Main game loop.
 
 Usage:
-    python main.py                  # full hardware mode
-    python main.py --stub-gantry    # develop without ESP32 connected
-    python main.py --no-vision      # skip CV (type moves manually for testing)
+    python main.py                           # local webcam, no YOLO
+    python main.py --stub-gantry             # develop without S3 connected
+    python main.py --no-vision               # skip CV (type moves manually)
+    python main.py --p4-port /dev/tty.xxx    # P4 streams frames + runs inference
+    python main.py --p4-port stub            # P4 stub for local dev
 
 Setup:
     1. pip install -r requirements.txt
@@ -17,7 +19,6 @@ Setup:
 import sys
 import os
 import argparse
-import time
 import cv2
 import chess
 
@@ -32,18 +33,28 @@ from inference.detect import PieceDetector
 
 from game.chess_engine import ChessEngine
 from game.game_state import GameState
+from game.graveyard import Graveyard
 from hardware.gantry import Gantry, GantryStub
+from hardware.p4_camera import P4Camera, P4CameraStub
 
 # --- Paths (relative to stark-chess/) ---
 CV_CALIBRATION = os.path.join(CV_REPO, "calibration", "calibration.json")
 CV_MODEL = os.path.join(CV_REPO, "model", "best.pt")
 
+# Flip to True once model is trained on your physical pieces.
+# When True, YOLOv8 disambiguates moves where both orderings are legal.
+# With --p4-port, inference runs on the P4 instead of locally.
+USE_YOLO = False
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="Autonomous chess board controller")
-    p.add_argument("--stub-gantry", action="store_true", help="Use GantryStub instead of real ESP32")
+    p.add_argument("--stub-gantry", action="store_true", help="Use GantryStub instead of real S3")
     p.add_argument("--no-vision", action="store_true", help="Skip camera — type moves manually")
-    p.add_argument("--camera", type=int, default=0, help="Webcam index (default 0)")
+    p.add_argument("--camera", type=int, default=0, help="Local webcam index (ignored when --p4-port is set)")
+    p.add_argument("--p4-port", default=None,
+                   help="Serial port for ESP32-P4 camera (e.g. /dev/tty.usbmodem1234). "
+                        "Pass 'stub' to use P4CameraStub for local dev.")
     p.add_argument("--stockfish", default=None, help="Path to Stockfish binary")
     p.add_argument("--skill", type=int, default=10, help="Stockfish skill level 0–20")
     p.add_argument("--think-time", type=float, default=1.0, help="Seconds Stockfish thinks per move")
@@ -53,7 +64,7 @@ def parse_args():
 def get_human_move_from_keyboard(board):
     """Fallback when --no-vision: type a UCI move like 'e2e4'."""
     while True:
-        raw = input(f"  Your move (UCI, e.g. e2e4): ").strip()
+        raw = input("  Your move (UCI, e.g. e2e4): ").strip()
         try:
             move = chess.Move.from_uci(raw)
             if board.is_legal(move):
@@ -61,6 +72,23 @@ def get_human_move_from_keyboard(board):
             print("  Illegal move, try again.")
         except ValueError:
             print("  Invalid format, try again.")
+
+
+def _get_frame(cap, p4):
+    """Read one frame from whichever source is active."""
+    if p4 is not None:
+        return p4.get_frame()
+    ret, frame = cap.read()
+    return frame if ret else None
+
+
+def _get_yolo_snapshot(frame, p4, piece_detector):
+    """Run YOLO on P4 or locally depending on what's connected."""
+    if p4 is not None:
+        return p4.infer()  # {square: piece_name} already
+    if piece_detector is not None:
+        return piece_detector.get_board_state(frame)
+    return None
 
 
 def main():
@@ -73,8 +101,10 @@ def main():
 
     # --- Vision setup ---
     cap = None
+    p4 = None
     move_detector = None
     piece_detector = None
+    calibration_data = None
 
     if not args.no_vision:
         if not os.path.exists(CV_CALIBRATION):
@@ -82,19 +112,37 @@ def main():
             print("Run: cd ../chess-vision && python calibration/calibrate.py")
             sys.exit(1)
 
-        print("Initialising camera…")
-        cap = cv2.VideoCapture(args.camera)
-        if not cap.isOpened():
-            print("ERROR: Could not open webcam")
-            sys.exit(1)
+        calibration_data = load_calibration(CV_CALIBRATION)
 
-        move_detector = BoardStateDetector(CV_CALIBRATION)
-
-        if os.path.exists(CV_MODEL):
-            piece_detector = PieceDetector(CV_MODEL, CV_CALIBRATION)
-            print("YOLOv8 model loaded.")
+        if args.p4_port:
+            # --- P4 path: camera lives on the P4, frames arrive over serial ---
+            if args.p4_port == "stub":
+                p4 = P4CameraStub()
+                print("P4 camera: using stub (blank frames)")
+            else:
+                p4 = P4Camera(args.p4_port)
+                print(f"P4 camera: connected on {args.p4_port}")
         else:
-            print(f"WARNING: best.pt not found at {CV_MODEL} — piece confirmation disabled")
+            # --- Local path: webcam plugged directly into laptop ---
+            move_detector = BoardStateDetector(CV_CALIBRATION)
+            print("Initialising local webcam…")
+            cap = cv2.VideoCapture(args.camera)
+            if not cap.isOpened():
+                print("ERROR: Could not open webcam")
+                sys.exit(1)
+
+            if USE_YOLO:
+                if os.path.exists(CV_MODEL):
+                    piece_detector = PieceDetector(CV_MODEL, CV_CALIBRATION)
+                    print("YOLOv8 model loaded (local).")
+                else:
+                    print(f"WARNING: best.pt not found at {CV_MODEL} — piece confirmation disabled")
+
+    graveyard = Graveyard(calibration=calibration_data)
+    if calibration_data and "graveyard_slots" in calibration_data:
+        print("Graveyard CV positions loaded from calibration.")
+    else:
+        print("Graveyard running in software-only mode (no CV positions).")
 
     # --- Game setup ---
     engine_kwargs = {}
@@ -107,9 +155,11 @@ def main():
         state.print_board()
 
         # Set initial reference frame
-        if move_detector and cap:
-            ret, frame = cap.read()
-            if ret:
+        if p4 is not None:
+            p4.set_reference()
+        elif move_detector:
+            frame = _get_frame(cap, None)
+            if frame is not None:
                 move_detector.set_reference(frame)
 
         # ---------------------------------------------------------------
@@ -125,29 +175,52 @@ def main():
                 if args.no_vision:
                     human_move = get_human_move_from_keyboard(state.board)
                 else:
-                    # Poll camera until board_state_detector triggers
                     while human_move is None:
-                        ret, frame = cap.read()
-                        if not ret:
-                            continue
+                        if p4 is not None:
+                            # P4 handles pixel diff + YOLO internally
+                            move_str = p4.poll_move()
+                            frame = None
+                        else:
+                            frame = _get_frame(cap, None)
+                            if frame is None:
+                                continue
+                            move_str = move_detector.update(frame, gantry_moving=gantry.is_moving, board=state.board)
 
-                        move_str = move_detector.update(frame, gantry_moving=gantry.is_moving)
                         if move_str:
-                            human_move = engine.parse_move(state.board, move_str)
-                            if human_move is None:
-                                print(f"  Detected '{move_str}' — not a legal move, waiting…")
-                                # Don't update reference yet; keep watching
+                            snapshot = None
+                            if USE_YOLO and p4 is None:
+                                snapshot = _get_yolo_snapshot(frame, None, piece_detector)
+                            result = engine.process_human_move(state.board, move_str, board_snapshot=snapshot)
+                            if result["status"] == "illegal":
+                                print(f"  Detected '{move_str}' — illegal, returning piece to {result['return_to']}")
+                                gantry.return_to_origin(result["return_to"])
+                            else:
+                                human_move = result["move"]
 
-                        # Press Q to quit
-                        if cv2.waitKey(1) & 0xFF == ord("q"):
+                        # Q to quit (local webcam only)
+                        if cap and cv2.waitKey(1) & 0xFF == ord("q"):
                             print("Quit signal received.")
                             gantry.close()
-                            if cap:
-                                cap.release()
+                            cap.release()
                             cv2.destroyAllWindows()
                             sys.exit(0)
 
-                # Apply human move
+                # If capture, tell human where to place the taken piece
+                if state.board.is_capture(human_move):
+                    captured = state.board.piece_at(human_move.to_square)
+                    if captured:
+                        slot = graveyard.get_slot_for(captured.color, captured.piece_type)
+                        if slot:
+                            graveyard.mark_occupied(slot, str(captured))
+                            print(f"\n  >>> Place the captured {chess.piece_name(captured.piece_type).title()} "
+                                  f"in graveyard slot {graveyard.slot_label(slot)}")
+                            print(f"      ({graveyard.slot_position_hint(slot)}) <<<\n")
+                        else:
+                            overflow_sq = graveyard.find_overflow_square(state.board, chess.square_name(human_move.to_square))
+                            print(f"\n  >>> Graveyard full for this piece type!")
+                            if overflow_sq:
+                                print(f"      Place it temporarily on {overflow_sq} — LED will flash. <<<\n")
+
                 state.apply_move(human_move, by="human")
                 print(f"  Human played: {state.last_move().san}")
                 state.print_board()
@@ -162,18 +235,36 @@ def main():
                 if engine_move is None:
                     break
 
-                # Apply move in game state first, then send to gantry
-                # (gantry.execute needs the board BEFORE the move to detect captures)
+                if state.board.is_capture(engine_move):
+                    captured = state.board.piece_at(engine_move.to_square)
+                    if captured:
+                        slot = graveyard.get_slot_for(captured.color, captured.piece_type)
+                        if slot:
+                            graveyard.mark_occupied(slot, str(captured))
+                            print(f"  Captured {chess.piece_name(captured.piece_type).title()} → graveyard {graveyard.slot_label(slot)}")
+                        else:
+                            overflow_sq = graveyard.find_overflow_square(state.board, chess.square_name(engine_move.to_square))
+                            if overflow_sq:
+                                print(f"  Graveyard full — overflow to {overflow_sq}. LED will flash.")
+                            else:
+                                print("  Graveyard full and no overflow square — piece dragged off board.")
+
                 gantry.execute(engine_move, board=state.board)
                 state.apply_move(engine_move, by="engine")
                 print(f"  Engine played: {state.last_move().san}")
                 state.print_board()
 
-                # Update CV reference after gantry finishes
-                if move_detector and cap:
-                    ret, frame = cap.read()
-                    if ret:
+                # Update move-detection reference after gantry finishes
+                if p4 is not None:
+                    p4.set_reference()
+                elif move_detector:
+                    frame = _get_frame(cap, None)
+                    if frame is not None:
                         move_detector.set_reference(frame)
+                        if USE_YOLO:
+                            snapshot = _get_yolo_snapshot(frame, None, piece_detector)
+                            if snapshot:
+                                graveyard.scan_with_cv(frame, piece_detector)
 
         # ---------------------------------------------------------------
         # Game over
@@ -187,6 +278,8 @@ def main():
         gantry.close()
         if cap:
             cap.release()
+        if p4:
+            p4.close()
         cv2.destroyAllWindows()
 
 

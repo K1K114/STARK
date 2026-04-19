@@ -45,7 +45,7 @@ class ChessEngine:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def parse_move(board, move_str):
+    def parse_move(board, move_str, board_snapshot=None):
         """Try to parse a UCI move string, trying both square orderings.
 
         board_state.py returns two changed squares sorted alphabetically
@@ -55,6 +55,9 @@ class ChessEngine:
         Args:
             board: chess.Board at the current position.
             move_str: 4-character string like "e2e4" or "e4e2".
+            board_snapshot: Optional dict {square: piece_name} from YOLOv8
+                after the move. When provided, the empty square is the
+                from-square — unambiguous even when both orderings are legal.
 
         Returns:
             chess.Move if one ordering is legal, else None.
@@ -62,14 +65,68 @@ class ChessEngine:
         if len(move_str) != 4:
             return None
         sq_a, sq_b = move_str[:2], move_str[2:]
-        for uci in [move_str, sq_b + sq_a]:
-            try:
-                move = chess.Move.from_uci(uci)
-                if board.is_legal(move):
-                    return move
-            except ValueError:
-                continue
+
+        if board_snapshot is not None:
+            # Whichever square is now empty is the from-square
+            a_empty = board_snapshot.get(sq_a) is None
+            b_empty = board_snapshot.get(sq_b) is None
+            if a_empty and not b_empty:
+                ordered = [sq_a + sq_b]
+            elif b_empty and not a_empty:
+                ordered = [sq_b + sq_a]
+            else:
+                # Both empty or both occupied — snapshot inconclusive, fall back
+                ordered = [sq_a + sq_b, sq_b + sq_a]
+        else:
+            ordered = [sq_a + sq_b, sq_b + sq_a]
+
+        legal_moves = []
+        for uci in ordered:
+            for candidate in [uci, uci + "q"]:  # try plain move then queen promotion
+                try:
+                    move = chess.Move.from_uci(candidate)
+                    if board.is_legal(move) and move not in legal_moves:
+                        legal_moves.append(move)
+                except ValueError:
+                    continue
+
+        if len(legal_moves) == 1:
+            return legal_moves[0]
+        if len(legal_moves) == 2:
+            # Both orderings legal and no YOLO snapshot to disambiguate
+            print(f"  WARNING: both {ordered[0]} and {ordered[1]} are legal — "
+                  "enable YOLOv8 (USE_YOLO=True) for unambiguous detection. "
+                  f"Defaulting to {ordered[0]}.")
+            return legal_moves[0]
         return None
+
+    @staticmethod
+    def process_human_move(board, move_str, board_snapshot=None):
+        """Validate a detected human move and return a structured result.
+
+        Args:
+            board: chess.Board at the current position (before the move).
+            move_str: 4-character string from board_state.py (e.g. "e2e4").
+            board_snapshot: Optional YOLO dict {square: piece_name} taken after
+                the human lifted the piece — used to identify the from-square.
+
+        Returns:
+            {"status": "legal",   "move": chess.Move}
+            {"status": "illegal", "return_to": square_name}
+        """
+        sq_a, sq_b = move_str[:2], move_str[2:]
+
+        # Determine from-square for illegal-move recovery before parse attempt
+        if board_snapshot is not None:
+            a_empty = board_snapshot.get(sq_a) is None
+            from_sq = sq_a if a_empty else sq_b
+        else:
+            from_sq = sq_a  # alphabetically first — best guess without YOLO
+
+        move = ChessEngine.parse_move(board, move_str, board_snapshot=board_snapshot)
+        if move is None:
+            return {"status": "illegal", "return_to": from_sq}
+        return {"status": "legal", "move": move}
 
     # ------------------------------------------------------------------
     # Engine queries
