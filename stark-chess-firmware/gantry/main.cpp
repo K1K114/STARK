@@ -43,7 +43,14 @@ static float ratioDown = 2.40f;
 static float homeFastSpeedM1Steps = 120.0f;
 static float homeSlowSpeedM1Steps = 40.0f;
 static const uint32_t HOME_BACKOFF_MS = 500;
+<<<<<<< HEAD
 static const uint32_t HOME_PHASE_TIMEOUT_MS = 30000;
+=======
+static const uint32_t HOME_PHASE_TIMEOUT_MS = 50000;
+static const uint16_t X_HOME_CURRENT_MA = 500;
+static const uint8_t X_HOME_SGTHRS = 60;
+static const uint32_t X_HOME_TCOOLTHRS = 0xFFFFF;
+>>>>>>> 13874bf (last chance)
 
 enum MotionMode {
   MOTION_NONE,

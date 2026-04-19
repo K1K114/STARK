@@ -142,6 +142,23 @@ python inference/detect.py --image path/to/frame.jpg
 
 Prints detected pieces and their squares, then shows the annotated frame.
 
+### Run detection on frames coming over serial (from webcamtoserial.py)
+
+This expects each frame as: `4-byte little-endian length + JPEG payload`
+(exactly what `webcamtoserial.py` sends).
+
+```bash
+python inference/serial_detect.py \
+  --port /dev/tty.usbmodem5B140758861 \
+  --baud 921600 \
+  --model model/chess_yolo_320_p4_int8.espdl
+```
+
+Note:
+- `.espdl` runs on ESP32-P4, not directly in Python.
+- `serial_detect.py` automatically uses an `.onnx` model from the same model folder
+  for laptop inference (or set `--model model/chess_yolo_320.onnx` explicitly).
+
 ### Test move detection on the webcam
 
 ```bash

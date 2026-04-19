@@ -17,7 +17,7 @@ SERIAL_PORT = '/dev/tty.usbmodem5B140758861'      # Windows: COM3, COM4, etc.
 BAUD_RATE = 921600        # Must match ESP32's baud rate!
 
 # Camera settings
-CAMERA_INDEX = 0        # 0 = default webcam
+CAMERA_INDEX = 1        # 0 = default webcam
 FRAME_WIDTH = 160         # Small size for fast transmission
 FRAME_HEIGHT = 120
 
@@ -54,6 +54,35 @@ def serial_sender_worker(frame_queue, stop_event, stats):
         except serial.SerialException:
             stop_event.set()
             break
+
+
+def serial_feedback_worker(stop_event, stats):
+    """Read and print ESP32 feedback lines while frames are being sent."""
+    ser = stats['ser']
+    while not stop_event.is_set():
+        try:
+            line = ser.readline()
+        except serial.SerialException:
+            stop_event.set()
+            break
+
+        if not line:
+            continue
+
+        msg = line.decode('utf-8', errors='replace').strip()
+        if not msg:
+            continue
+
+        if msg.startswith('DET '):
+            stats['det_lines'] += 1
+        elif msg.startswith('BOX '):
+            stats['box_lines'] += 1
+        elif msg.startswith('STAT '):
+            stats['stat_lines'] += 1
+        elif msg.startswith('ERR:'):
+            stats['err_lines'] += 1
+
+        print(f"[P4] {msg}")
 
 
 def queue_latest(frame_queue, frame):
@@ -116,13 +145,26 @@ def main():
     start_time = time.time()
     stop_event = threading.Event()
     frame_queue = Queue(maxsize=1)
-    serial_stats = {'ser': ser, 'sent_frames': 0}
+    serial_stats = {
+        'ser': ser,
+        'sent_frames': 0,
+        'det_lines': 0,
+        'box_lines': 0,
+        'stat_lines': 0,
+        'err_lines': 0,
+    }
     sender_thread = threading.Thread(
         target=serial_sender_worker,
         args=(frame_queue, stop_event, serial_stats),
         daemon=True,
     )
+    feedback_thread = threading.Thread(
+        target=serial_feedback_worker,
+        args=(stop_event, serial_stats),
+        daemon=True,
+    )
     sender_thread.start()
+    feedback_thread.start()
     
     try:
         while True:
@@ -140,15 +182,19 @@ def main():
             fps = frame_count / elapsed if elapsed > 0 else 0
 
             status_frame = frame.copy()
-            status_text = f"Preview FPS: {fps:.1f} | Frame #{frame_count}"
+            status_text = (
+                f"Preview FPS: {fps:.1f} | Frame #{frame_count} "
+                f"| Sent: {serial_stats['sent_frames']} | DET: {serial_stats['det_lines']} "
+                f"| ERR: {serial_stats['err_lines']}"
+            )
             cv2.putText(
                 status_frame,
                 status_text,
                 (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
+                0.5,
                 (0, 255, 0),
-                2,
+                1,
             )
 
             cv2.imshow('ESP32-P4 Camera Feed', status_frame)
@@ -163,6 +209,7 @@ def main():
     finally:
         stop_event.set()
         sender_thread.join(timeout=2)
+        feedback_thread.join(timeout=2)
         # Cleanup
         cap.release()
         ser.close()
@@ -171,6 +218,10 @@ def main():
         print(f"\n[STATISTICS]")
         print(f"Total preview frames: {frame_count}")
         print(f"Total frames sent: {serial_stats['sent_frames']}")
+        print(f"P4 DET lines: {serial_stats['det_lines']}")
+        print(f"P4 BOX lines: {serial_stats['box_lines']}")
+        print(f"P4 STAT lines: {serial_stats['stat_lines']}")
+        print(f"P4 ERR lines: {serial_stats['err_lines']}")
         elapsed = time.time() - start_time
         if elapsed > 0:
             print(f"Average preview FPS: {frame_count / elapsed:.1f}")
