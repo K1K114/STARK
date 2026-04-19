@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>STARK · Board UI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Syne:wght@700&display=swap" rel="stylesheet" />
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: "IBM Plex Mono", monospace;
+      background: radial-gradient(ellipse at 30% 20%, #1a2230 0%, #0a0b0f 55%);
+      color: #e8e4dc;
+    }
+    .card {
+      max-width: 28rem;
+      padding: 2rem;
+      border: 1px solid rgba(0, 240, 212, 0.2);
+      border-radius: 14px;
+      background: rgba(18, 20, 28, 0.85);
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+    }
+    h1 {
+      font-family: "Syne", sans-serif;
+      font-size: 1.5rem;
+      margin: 0 0 0.75rem;
+      color: #c87e4a;
+    }
+    p { margin: 0.5rem 0; line-height: 1.55; font-size: 0.9rem; color: #9aa0b5; }
+    code {
+      display: block;
+      margin: 1rem 0;
+      padding: 0.85rem 1rem;
+      background: #0d0e12;
+      border-radius: 8px;
+      color: #9dffb8;
+      font-size: 0.78rem;
+      overflow-x: auto;
+    }
+    a.btn {
+      display: inline-block;
+      margin-top: 1rem;
+      padding: 0.65rem 1.1rem;
+      border-radius: 8px;
+      border: 1px solid rgba(0, 240, 212, 0.45);
+      color: #e8e4dc;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 0.82rem;
+      letter-spacing: 0.06em;
+    }
+    a.btn:hover { background: rgba(0, 240, 212, 0.12); }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Board UI moved</h1>
+    <p>The live matrix + axis LEDs run in the new Vite app (richer layout than this static page).</p>
+    <p>API stays on this host (port 8000). Start the UI on port 5173:</p>
+    <code>cd stark-board-web &amp;&amp; npm install &amp;&amp; npm run dev</code>
+    <p>Then open the dev server (usually <strong>http://127.0.0.1:5173</strong>). Keep Uvicorn running for API + CORS.</p>
+    <a class="btn" href="http://127.0.0.1:5173">Open board UI</a>
+    <p style="margin-top:1.25rem;font-size:0.8rem;">Docs: <a href="/docs" style="color:#00f0d4;">/docs</a> · Hint JSON: <a href="/hardware/move_hint" style="color:#00f0d4;">/hardware/move_hint</a></p>
+  </div>
+</body>
+</html>

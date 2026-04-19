@@ -8,6 +8,8 @@ Usage:
     python main.py --no-vision               # skip CV (type moves manually)
     python main.py --p4-port /dev/tty.xxx    # P4 streams frames + runs inference
     python main.py --p4-port stub            # P4 stub for local dev
+    python main.py --stub-voice --no-vision --stub-gantry   # [VOICE] logs, no TTS / no CV
+    python main.py --voice --reference-audio magnus.wav --stub-gantry --no-vision
 
 Setup:
     1. pip install -r requirements.txt
@@ -36,6 +38,7 @@ from game.game_state import GameState
 from game.graveyard import Graveyard
 from hardware.gantry import Gantry, GantryStub
 from hardware.p4_camera import P4Camera, P4CameraStub
+from hardware.voice import VoiceAnnouncer, VoiceAnnouncerStub, san_to_speech
 
 # --- Paths (relative to stark-chess/) ---
 CV_CALIBRATION = os.path.join(CV_REPO, "calibration", "calibration.json")
@@ -58,10 +61,28 @@ def parse_args():
     p.add_argument("--stockfish", default=None, help="Path to Stockfish binary")
     p.add_argument("--skill", type=int, default=10, help="Stockfish skill level 0–20")
     p.add_argument("--think-time", type=float, default=1.0, help="Seconds Stockfish thinks per move")
-    return p.parse_args()
+    p.add_argument("--voice", action="store_true", help="Enable VoxCPM voice announcements (reference .wav clone)")
+    p.add_argument(
+        "--reference-audio",
+        default=None,
+        help="Path to Magnus (or other) reference .wav for --voice",
+    )
+    p.add_argument("--stub-voice", action="store_true", help="Print [VOICE] lines instead of loading VoxCPM")
+    args = p.parse_args()
+    if args.voice and not args.stub_voice:
+        if not args.reference_audio:
+            p.error("--reference-audio is required with --voice (or use --stub-voice)")
+        if not os.path.isfile(args.reference_audio):
+            p.error(f"--reference-audio not found: {args.reference_audio}")
+    return args
 
 
-def get_human_move_from_keyboard(board):
+def speak(voice, text: str) -> None:
+    if voice:
+        voice.say(text)
+
+
+def get_human_move_from_keyboard(board, voice=None):
     """Fallback when --no-vision: type a UCI move like 'e2e4'."""
     while True:
         raw = input("  Your move (UCI, e.g. e2e4): ").strip()
@@ -69,8 +90,11 @@ def get_human_move_from_keyboard(board):
             move = chess.Move.from_uci(raw)
             if board.is_legal(move):
                 return move
+            from_sq = raw[:2] if len(raw) >= 2 else "the correct square"
+            speak(voice, f"Illegal move, please return the piece to {from_sq}")
             print("  Illegal move, try again.")
         except ValueError:
+            speak(voice, "Invalid move format, try again.")
             print("  Invalid format, try again.")
 
 
@@ -93,6 +117,12 @@ def _get_yolo_snapshot(frame, p4, piece_detector):
 
 def main():
     args = parse_args()
+
+    voice = None
+    if args.stub_voice:
+        voice = VoiceAnnouncerStub()
+    elif args.voice:
+        voice = VoiceAnnouncer(args.reference_audio)
 
     # --- Hardware setup ---
     GantryClass = GantryStub if args.stub_gantry else Gantry
@@ -171,9 +201,10 @@ def main():
             if state.turn == "white":
                 # --- Human's turn ---
                 print("Waiting for human move…")
+                speak(voice, "Your move")
 
                 if args.no_vision:
-                    human_move = get_human_move_from_keyboard(state.board)
+                    human_move = get_human_move_from_keyboard(state.board, voice=voice)
                 else:
                     while human_move is None:
                         if p4 is not None:
@@ -192,8 +223,13 @@ def main():
                                 snapshot = _get_yolo_snapshot(frame, None, piece_detector)
                             result = engine.process_human_move(state.board, move_str, board_snapshot=snapshot)
                             if result["status"] == "illegal":
-                                print(f"  Detected '{move_str}' — illegal, returning piece to {result['return_to']}")
-                                gantry.return_to_origin(result["return_to"])
+                                rt = result["return_to"]
+                                speak(
+                                    voice,
+                                    f"Illegal move, please return the piece to {rt}",
+                                )
+                                print(f"  Detected '{move_str}' — illegal, returning piece to {rt}")
+                                gantry.return_to_origin(rt)
                             else:
                                 human_move = result["move"]
 
@@ -212,17 +248,27 @@ def main():
                         slot = graveyard.get_slot_for(captured.color, captured.piece_type)
                         if slot:
                             graveyard.mark_occupied(slot, str(captured))
-                            print(f"\n  >>> Place the captured {chess.piece_name(captured.piece_type).title()} "
+                            pname = chess.piece_name(captured.piece_type).title()
+                            speak(
+                                voice,
+                                f"Place the captured {pname} in graveyard slot {graveyard.slot_label(slot)}",
+                            )
+                            print(f"\n  >>> Place the captured {pname} "
                                   f"in graveyard slot {graveyard.slot_label(slot)}")
                             print(f"      ({graveyard.slot_position_hint(slot)}) <<<\n")
                         else:
                             overflow_sq = graveyard.find_overflow_square(state.board, chess.square_name(human_move.to_square))
                             print(f"\n  >>> Graveyard full for this piece type!")
                             if overflow_sq:
+                                speak(voice, f"Graveyard is full, place it on {overflow_sq}")
                                 print(f"      Place it temporarily on {overflow_sq} — LED will flash. <<<\n")
+                            else:
+                                speak(voice, "Graveyard is full; place the piece off the board as directed.")
 
                 state.apply_move(human_move, by="human")
-                print(f"  Human played: {state.last_move().san}")
+                san = state.last_move().san
+                speak(voice, f"You played {san_to_speech(san)}")
+                print(f"  Human played: {san}")
                 state.print_board()
 
                 if state.is_over():
@@ -231,6 +277,7 @@ def main():
             else:
                 # --- Engine's turn ---
                 print("Stockfish thinking…")
+                speak(voice, "I'm thinking")
                 engine_move = engine.get_best_move(state.board, time_limit=args.think_time)
                 if engine_move is None:
                     break
@@ -241,17 +288,23 @@ def main():
                         slot = graveyard.get_slot_for(captured.color, captured.piece_type)
                         if slot:
                             graveyard.mark_occupied(slot, str(captured))
-                            print(f"  Captured {chess.piece_name(captured.piece_type).title()} → graveyard {graveyard.slot_label(slot)}")
+                            pname = chess.piece_name(captured.piece_type).title()
+                            speak(voice, f"I captured your {pname}")
+                            print(f"  Captured {pname} → graveyard {graveyard.slot_label(slot)}")
                         else:
                             overflow_sq = graveyard.find_overflow_square(state.board, chess.square_name(engine_move.to_square))
                             if overflow_sq:
+                                speak(voice, f"Graveyard is full, place it on {overflow_sq}")
                                 print(f"  Graveyard full — overflow to {overflow_sq}. LED will flash.")
                             else:
+                                speak(voice, "Graveyard is full; place the piece off the board as directed.")
                                 print("  Graveyard full and no overflow square — piece dragged off board.")
 
                 gantry.execute(engine_move, board=state.board)
                 state.apply_move(engine_move, by="engine")
-                print(f"  Engine played: {state.last_move().san}")
+                esan = state.last_move().san
+                speak(voice, f"I play {san_to_speech(esan)}")
+                print(f"  Engine played: {esan}")
                 state.print_board()
 
                 # Update move-detection reference after gantry finishes
@@ -271,8 +324,10 @@ def main():
         # ---------------------------------------------------------------
         print("\n" + "=" * 40)
         print("GAME OVER")
-        print(state.outcome_message())
+        outcome = state.outcome_message()
+        print(outcome)
         print("=" * 40 + "\n")
+        speak(voice, outcome)
 
         gantry.home()
         gantry.close()

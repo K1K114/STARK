@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 GameMode = Literal["lichess", "training", "playing"]
 
@@ -121,3 +121,63 @@ class ConnectLichessLegacyRequest(BaseModel):
     game_id: str = Field(..., min_length=1)
     token: str | None = None
     human_color: Literal["white", "black"] = "white"
+
+
+# --- Physical board LED hints (ESP32 polls GET /hardware/move_hint) ---
+
+
+class MoveHintRequest(BaseModel):
+    """Set which square to highlight first (from), then second (to)."""
+
+    uci: str | None = Field(
+        default=None,
+        description="Full UCI move, e.g. e2e4 (from = e2, to = e4)",
+    )
+    clear: bool = Field(
+        default=False,
+        description="If true, clear hint and turn conceptual LEDs off",
+    )
+
+    @model_validator(mode="after")
+    def validate_uci_or_clear(self) -> MoveHintRequest:
+        if self.clear:
+            return self
+        u = (self.uci or "").strip()
+        if len(u) < 4:
+            raise ValueError("Provide uci (e.g. e2e4) or set clear=true")
+        self.uci = u
+        return self
+
+
+class SquareLedInfo(BaseModel):
+    square: str
+    base_led: int = Field(..., ge=0, le=7, description="Index on file / base strip (a=0)")
+    side_led: int = Field(..., ge=0, le=7, description="Index on rank / side strip (rank 1=0)")
+    # Use list[int] (not tuple) so OpenAPI 3.0 gets { type: array, items, minItems, maxItems }
+    # instead of JSON-Schema prefixItems, which breaks Swagger / some clients.
+    rgb: list[int] = Field(
+        ...,
+        min_length=3,
+        max_length=3,
+        description="WS2812 RGB, three integers 0-255",
+    )
+
+    @field_validator("rgb")
+    @classmethod
+    def _rgb_range(cls, v: list[int]) -> list[int]:
+        for c in v:
+            if c < 0 or c > 255:
+                raise ValueError("rgb values must be between 0 and 255")
+        return v
+
+
+class MoveHintResponse(BaseModel):
+    """Current hint for firmware + UI. When a hint is set, phase alternates from -> to."""
+
+    phase: Literal["idle", "from", "to"]
+    uci: str | None = None
+    from_square: SquareLedInfo | None = None
+    to_square: SquareLedInfo | None = None
+    elapsed_sec: float = 0.0
+    cycle_from_sec: float = Field(default=1.2, description="Seconds to show from-square")
+    cycle_to_sec: float = Field(default=1.2, description="Seconds to show to-square")

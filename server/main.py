@@ -5,15 +5,21 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 import aiohttp
 import chess
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from . import lichess_client
+from .led_map import rgb_for_phase, square_to_led_indices, uci_to_from_to
 from .models import (
     AnalyzeLastMoveResponse,
     ConnectLichessLegacyRequest,
@@ -24,6 +30,9 @@ from .models import (
     GameStateResponse,
     MakeMoveRequest,
     MakeMoveResponse,
+    MoveHintRequest,
+    MoveHintResponse,
+    SquareLedInfo,
     TopLineInfo,
 )
 from .teaching import EngineHolder, build_top_lines, classify_move
@@ -82,6 +91,13 @@ class AppState:
     last_move_uci: str | None = None
     mode: GameMode = "training"
     human_color: Literal["white", "black"] = "white"
+    # LED move hint (for ESP32 + static UI): from-square then to-square
+    hint_uci: str | None = None
+    hint_from: str | None = None
+    hint_to: str | None = None
+    hint_start_monotonic: float | None = None
+    hint_cycle_from_sec: float = 1.2
+    hint_cycle_to_sec: float = 1.2
 
 
 state = AppState()
@@ -196,6 +212,108 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="STARK Gantry Lichess + LC0", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+if _STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR), html=True), name="static")
+
+
+@app.get("/")
+async def root():
+    if (_STATIC_DIR / "index.html").is_file():
+        return RedirectResponse(url="/static/index.html")
+    return {"ok": True, "docs": "/docs", "hint": "GET /hardware/move_hint"}
+
+
+def _set_move_hint_uci(uci: str) -> None:
+    f, t = uci_to_from_to(uci)
+    state.hint_uci = uci.strip().lower()
+    state.hint_from = f
+    state.hint_to = t
+    state.hint_start_monotonic = time.monotonic()
+
+
+def _clear_move_hint() -> None:
+    state.hint_uci = None
+    state.hint_from = None
+    state.hint_to = None
+    state.hint_start_monotonic = None
+
+
+def _build_move_hint_response() -> MoveHintResponse:
+    if not state.hint_from or not state.hint_to or state.hint_start_monotonic is None:
+        return MoveHintResponse(
+            phase="idle",
+            uci=None,
+            from_square=None,
+            to_square=None,
+            elapsed_sec=0.0,
+            cycle_from_sec=state.hint_cycle_from_sec,
+            cycle_to_sec=state.hint_cycle_to_sec,
+        )
+
+    elapsed = time.monotonic() - state.hint_start_monotonic
+    cycle = state.hint_cycle_from_sec + state.hint_cycle_to_sec
+    t = elapsed % cycle if cycle > 0 else 0.0
+    if t < state.hint_cycle_from_sec:
+        phase: Literal["from", "to"] = "from"
+    else:
+        phase = "to"
+
+    fi = square_to_led_indices(state.hint_from)
+    ti = square_to_led_indices(state.hint_to)
+    from_rgb = rgb_for_phase("from")
+    to_rgb = rgb_for_phase("to")
+
+    return MoveHintResponse(
+        phase=phase,
+        uci=state.hint_uci,
+        from_square=SquareLedInfo(
+            square=fi["square"],
+            base_led=fi["base_led"],
+            side_led=fi["side_led"],
+            rgb=from_rgb,
+        ),
+        to_square=SquareLedInfo(
+            square=ti["square"],
+            base_led=ti["base_led"],
+            side_led=ti["side_led"],
+            rgb=to_rgb,
+        ),
+        elapsed_sec=round(elapsed, 3),
+        cycle_from_sec=state.hint_cycle_from_sec,
+        cycle_to_sec=state.hint_cycle_to_sec,
+    )
+
+
+@app.get("/hardware/move_hint", response_model=MoveHintResponse)
+async def get_move_hint() -> MoveHintResponse:
+    """Poll from ESP32: current phase + base/side LED indices + RGB."""
+    async with state.lock:
+        return _build_move_hint_response()
+
+
+@app.post("/hardware/move_hint", response_model=MoveHintResponse)
+async def post_move_hint(body: MoveHintRequest) -> MoveHintResponse:
+    """Push a move hint (UCI) or clear. Does not require /connect session."""
+    async with state.lock:
+        if body.clear:
+            _clear_move_hint()
+            return _build_move_hint_response()
+        assert body.uci is not None
+        try:
+            _set_move_hint_uci(body.uci)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return _build_move_hint_response()
 
 
 async def _start_connect(body: ConnectRequest) -> ConnectResponse:
@@ -420,8 +538,11 @@ async def _make_move_playing(
                 )
             state.board.push(eng_move)
             final_fen = state.board.fen()
-
-        engine_reply = EngineReply(uci=eng_uci, fen=final_fen)
+            engine_reply = EngineReply(uci=eng_uci, fen=final_fen)
+            try:
+                _set_move_hint_uci(eng_uci)
+            except ValueError:
+                logger.warning("Could not set LED hint for engine UCI %s", eng_uci)
 
     return MakeMoveResponse(
         fen=final_fen,

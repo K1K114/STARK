@@ -1,0 +1,24 @@
+{
+  "expo": {
+    "name": "STARK Signal Board",
+    "slug": "stark-board-native",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "scheme": "starkboard",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#0a0b0f"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.stark.board"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0a0b0f"
+      },
+      "package": "com.stark.board"
+    }
+  }
+}

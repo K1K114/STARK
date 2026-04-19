@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/axisleds.tsx","./src/components/chessboard.tsx","./src/components/promotionpicker.tsx","./src/lib/api.ts","./src/lib/fen.ts"],"version":"5.7.3"}
