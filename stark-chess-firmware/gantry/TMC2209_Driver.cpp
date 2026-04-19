@@ -1,4 +1,4 @@
-#include "Stepper_Driver.h"
+#include "TMC2209_Driver.h"
 
 #include <Arduino.h>
 #include <TMCStepper.h>
@@ -6,30 +6,12 @@
 #define DEFAULT_PULSE_WIDTH_US 500U
 #define MIN_PULSE_WIDTH_US 2U
 
-static bool valid_driver(const StepperDriver *driver) {
+static bool valid_driver(const TMC2209Driver *driver) {
     return driver != nullptr;
 }
 
-static uint32_t rpm_to_half_period_us(const StepperDriver *driver, float rpm) {
-    if (rpm <= 0.0f || driver->steps_per_rev == 0U) {
-        return driver->pulse_width_us;
-    }
-
-    float steps_per_second = (rpm * (float)driver->steps_per_rev) / 60.0f;
-    if (steps_per_second <= 0.0f) {
-        return driver->pulse_width_us;
-    }
-
-    float half_period = 500000.0f / steps_per_second;
-    if (half_period < (float)MIN_PULSE_WIDTH_US) {
-        half_period = (float)MIN_PULSE_WIDTH_US;
-    }
-
-    return (uint32_t)half_period;
-}
-
-bool Stepper_Init(
-    StepperDriver *driver,
+bool TMC2209_Init(
+    TMC2209Driver *driver,
     HardwareSerial *uart,
     int uart_rx_pin,
     int uart_tx_pin,
@@ -71,12 +53,12 @@ bool Stepper_Init(
 
     digitalWrite(driver->step_pin, LOW);
     digitalWrite(driver->dir_pin, LOW);
-    Stepper_Disable(driver);
+    TMC2209_Disable(driver);
 
     return true;
 }
 
-bool Stepper_Begin(StepperDriver *driver, uint32_t uart_baud) {
+bool TMC2209_Begin(TMC2209Driver *driver, uint32_t uart_baud) {
     if (!valid_driver(driver) || driver->uart == nullptr) {
         return false;
     }
@@ -103,7 +85,7 @@ bool Stepper_Begin(StepperDriver *driver, uint32_t uart_baud) {
     return true;
 }
 
-void Stepper_Enable(StepperDriver *driver) {
+void TMC2209_Enable(TMC2209Driver *driver) {
     if (!valid_driver(driver)) {
         return;
     }
@@ -112,7 +94,7 @@ void Stepper_Enable(StepperDriver *driver) {
     driver->is_enabled = true;
 }
 
-void Stepper_Disable(StepperDriver *driver) {
+void TMC2209_Disable(TMC2209Driver *driver) {
     if (!valid_driver(driver)) {
         return;
     }
@@ -121,7 +103,7 @@ void Stepper_Disable(StepperDriver *driver) {
     driver->is_enabled = false;
 }
 
-void Stepper_SetDirection(StepperDriver *driver, bool clockwise) {
+void TMC2209_SetDirection(TMC2209Driver *driver, bool clockwise) {
     if (!valid_driver(driver)) {
         return;
     }
@@ -130,7 +112,7 @@ void Stepper_SetDirection(StepperDriver *driver, bool clockwise) {
     digitalWrite(driver->dir_pin, dir ? HIGH : LOW);
 }
 
-void Stepper_SetPulseWidthUs(StepperDriver *driver, uint32_t pulse_width_us) {
+void TMC2209_SetPulseWidthUs(TMC2209Driver *driver, uint32_t pulse_width_us) {
     if (!valid_driver(driver)) {
         return;
     }
@@ -138,58 +120,26 @@ void Stepper_SetPulseWidthUs(StepperDriver *driver, uint32_t pulse_width_us) {
     driver->pulse_width_us = (pulse_width_us < MIN_PULSE_WIDTH_US) ? MIN_PULSE_WIDTH_US : pulse_width_us;
 }
 
-void Stepper_Pulse(StepperDriver *driver) {
+void TMC2209_SetStepLevel(TMC2209Driver *driver, bool level_high) {
     if (!valid_driver(driver)) {
         return;
     }
 
-    digitalWrite(driver->step_pin, HIGH);
+    digitalWrite(driver->step_pin, level_high ? HIGH : LOW);
+}
+
+void TMC2209_Pulse(TMC2209Driver *driver) {
+    if (!valid_driver(driver)) {
+        return;
+    }
+
+    TMC2209_SetStepLevel(driver, true);
     delayMicroseconds(driver->pulse_width_us);
-    digitalWrite(driver->step_pin, LOW);
+    TMC2209_SetStepLevel(driver, false);
     delayMicroseconds(driver->pulse_width_us);
 }
 
-void Stepper_Step(StepperDriver *driver, uint32_t steps, bool clockwise) {
-    if (!valid_driver(driver) || steps == 0U) {
-        return;
-    }
-
-    Stepper_SetDirection(driver, clockwise);
-    for (uint32_t i = 0; i < steps; ++i) {
-        Stepper_Pulse(driver);
-    }
-}
-
-void Stepper_StepAtRPM(StepperDriver *driver, uint32_t steps, bool clockwise, float rpm) {
-    if (!valid_driver(driver) || steps == 0U) {
-        return;
-    }
-
-    uint32_t half_period_us = rpm_to_half_period_us(driver, rpm);
-    Stepper_SetDirection(driver, clockwise);
-
-    for (uint32_t i = 0; i < steps; ++i) {
-        digitalWrite(driver->step_pin, HIGH);
-        delayMicroseconds(half_period_us);
-        digitalWrite(driver->step_pin, LOW);
-        delayMicroseconds(half_period_us);
-    }
-}
-
-void Stepper_MoveRevolutions(StepperDriver *driver, float revolutions, bool clockwise) {
-    if (!valid_driver(driver) || revolutions <= 0.0f) {
-        return;
-    }
-
-    uint32_t steps = (uint32_t)(revolutions * (float)driver->steps_per_rev);
-    if (steps == 0U) {
-        steps = 1U;
-    }
-
-    Stepper_Step(driver, steps, clockwise);
-}
-
-uint8_t Stepper_TestConnection(StepperDriver *driver) {
+uint8_t TMC2209_TestConnection(TMC2209Driver *driver) {
     if (!valid_driver(driver) || driver->tmc == nullptr) {
         return 255U;
     }

@@ -1,5 +1,5 @@
-#ifndef STEPPER_DRIVER_H
-#define STEPPER_DRIVER_H
+#ifndef TMC2209_DRIVER_H
+#define TMC2209_DRIVER_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -24,10 +24,10 @@ typedef struct {
     uint16_t microsteps;
     HardwareSerial *uart;
     TMC2209Stepper *tmc;
-} StepperDriver;
+} TMC2209Driver;
 
-bool Stepper_Init(
-    StepperDriver *driver,
+bool TMC2209_Init(
+    TMC2209Driver *driver,
     HardwareSerial *uart,
     int uart_rx_pin,
     int uart_tx_pin,
@@ -43,20 +43,16 @@ bool Stepper_Init(
     uint16_t microsteps
 );
 
-bool Stepper_Begin(StepperDriver *driver, uint32_t uart_baud);
+bool TMC2209_Begin(TMC2209Driver *driver, uint32_t uart_baud);
 
-void Stepper_Enable(StepperDriver *driver);
-void Stepper_Disable(StepperDriver *driver);
+void TMC2209_Enable(TMC2209Driver *driver);
+void TMC2209_Disable(TMC2209Driver *driver);
 
-void Stepper_SetDirection(StepperDriver *driver, bool clockwise);
-void Stepper_SetPulseWidthUs(StepperDriver *driver, uint32_t pulse_width_us);
+void TMC2209_SetDirection(TMC2209Driver *driver, bool clockwise);
+void TMC2209_SetPulseWidthUs(TMC2209Driver *driver, uint32_t pulse_width_us);
+void TMC2209_SetStepLevel(TMC2209Driver *driver, bool level_high);
+void TMC2209_Pulse(TMC2209Driver *driver);
 
-void Stepper_Pulse(StepperDriver *driver);
-void Stepper_Step(StepperDriver *driver, uint32_t steps, bool clockwise);
-
-void Stepper_StepAtRPM(StepperDriver *driver, uint32_t steps, bool clockwise, float rpm);
-void Stepper_MoveRevolutions(StepperDriver *driver, float revolutions, bool clockwise);
-
-uint8_t Stepper_TestConnection(StepperDriver *driver);
+uint8_t TMC2209_TestConnection(TMC2209Driver *driver);
 
 #endif

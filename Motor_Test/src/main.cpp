@@ -1,79 +1,76 @@
-#include <TMCStepper.h>
+#include <Arduino.h>
+#include <AccelStepper.h>
 
-#define STEP_PIN1    4
-#define DIR_PIN1     5
-#define EN_PIN1      6
-#define R_SENSE     0.11f  // TMC2209 typical sense resistor
+#define STEP_PIN1 4
+#define DIR_PIN1 5
+#define EN_PIN1 6
 
-// Motor 1 UART pins (TX=17, RX=16)
-#define TMC1_TX_PIN  17
-#define TMC1_RX_PIN  16
+constexpr int FULL_STEPS_PER_REV = 200;
+constexpr int MICROSTEPS = 32;  // DRV8825 MS pins set for 1/32 mode
+constexpr int STEPS_PER_REV = FULL_STEPS_PER_REV * MICROSTEPS;
+constexpr float TARGET_RPM = 60.0f;
+constexpr float MAX_SPEED_STEPS_S = (STEPS_PER_REV * TARGET_RPM) / 60.0f;
+constexpr float ACCEL_STEPS_S2 = 12000.0f;
+constexpr unsigned long DWELL_MS = 1000;
 
-// Single driver on Serial1.
-TMC2209Stepper driver1(&Serial1, R_SENSE, 0b00);
+AccelStepper motor1(AccelStepper::DRIVER, STEP_PIN1, DIR_PIN1);
 
-constexpr int STEPS_PER_REV = 3200;  // 200 full steps * 16 microsteps
-
-void init_driver(TMC2209Stepper &driver, const char *name) {
-  driver.begin();
-  driver.toff(5);                // Enable driver via UART
-  driver.rms_current(800);       // Adjust for your motor
-  driver.microsteps(16);         // 16 microstepping
-  driver.pwm_autoscale(true);    // StealthChop
-  driver.en_spreadCycle(false);  // StealthChop mode (quiet)
-
-  uint8_t result = driver.test_connection();
-  if (result == 0) {
-    Serial.print(name);
-    Serial.println(" connected OK!");
-  } else {
-    Serial.print(name);
-    Serial.print(" connection FAILED! Error: ");
-    Serial.println(result);
-  }
-}
-
-void step_motor1(int steps, bool clockwise, uint16_t step_delay_us) {
-  digitalWrite(DIR_PIN1, clockwise ? HIGH : LOW);
-
-  for (int i = 0; i < steps; i++) {
-    digitalWrite(STEP_PIN1, HIGH);
-    delayMicroseconds(step_delay_us);
-    digitalWrite(STEP_PIN1, LOW);
-    delayMicroseconds(step_delay_us);
-  }
-}
+long targetPosition = STEPS_PER_REV;
+unsigned long dwellStart = 0;
+bool dwellActive = false;
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("TMC2209 Single-Motor Test Starting...");
+  Serial.println("DRV8825 + AccelStepper Single-Motor Test Starting...");
 
-  // Start UART for TMC2209 (Serial.begin uses RX, TX order)
-  Serial1.begin(115200, SERIAL_8N1, TMC1_RX_PIN, TMC1_TX_PIN);
-
-  pinMode(STEP_PIN1, OUTPUT);
-  pinMode(DIR_PIN1, OUTPUT);
   pinMode(EN_PIN1, OUTPUT);
+  digitalWrite(EN_PIN1, LOW);  // DRV8825 enable is active LOW
 
-  digitalWrite(EN_PIN1, LOW);  // Enable driver
+  motor1.setEnablePin(EN_PIN1);
+  motor1.setPinsInverted(false, false, true);
+  motor1.setMinPulseWidth(2);  // DRV8825 step high pulse >= 1.9us
+  motor1.enableOutputs();
+  motor1.setMaxSpeed(MAX_SPEED_STEPS_S);
+  motor1.setAcceleration(ACCEL_STEPS_S2);
+  motor1.setCurrentPosition(0);
+  motor1.moveTo(targetPosition);
 
-  init_driver(driver1, "Driver1");
-
-  // Print some info
-  Serial.print("Driver1 microsteps: ");
-  Serial.println(driver1.microsteps());
-  Serial.print("Driver1 current (mA): ");
-  Serial.println(driver1.rms_current());
+  Serial.print("Max speed (steps/s): ");
+  Serial.println(MAX_SPEED_STEPS_S);
+  Serial.print("Target speed (RPM): ");
+  Serial.println(TARGET_RPM);
+  Serial.print("Acceleration (steps/s^2): ");
+  Serial.println(ACCEL_STEPS_S2);
+  Serial.print("Move distance (steps): ");
+  Serial.println(STEPS_PER_REV);
 }
 
 void loop() {
-  Serial.println("Spinning clockwise...");
-  step_motor1(STEPS_PER_REV, true, 500);
+  motor1.run();
 
-  delay(1000);
+  if (motor1.distanceToGo() != 0) {
+    return;
+  }
 
-  Serial.println("Spinning counter-clockwise...");
-  step_motor1(STEPS_PER_REV, false, 500);
+  if (!dwellActive) {
+    dwellActive = true;
+    dwellStart = millis();
+    if (targetPosition > 0) {
+      Serial.println("Reached CW target");
+    } else {
+      Serial.println("Reached CCW target");
+    }
+    return;
+  }
 
-  delay(1000);
+  if (millis() - dwellStart >= DWELL_MS) {
+    targetPosition = -targetPosition;
+    if (targetPosition > 0) {
+      Serial.println("Moving clockwise...");
+    } else {
+      Serial.println("Moving counter-clockwise...");
+    }
+    motor1.moveTo(targetPosition);
+    dwellActive = false;
+  }
 }
