@@ -13,12 +13,37 @@ Usage:
 from pathlib import Path
 import argparse
 import math
+import tempfile
 
 import cv2
+import onnx
+from onnx import shape_inference
 import torch
 from torch.utils.data import DataLoader, Dataset
 
 from esp_ppq.api import espdl_quantize_onnx
+
+
+def fix_negative_axes(onnx_path: str) -> str:
+    """Replace negative axis attributes with positive equivalents for ESP-PPQ compatibility."""
+    model = onnx.load(onnx_path)
+    model = shape_inference.infer_shapes(model)
+
+    rank_map = {}
+    for vi in list(model.graph.value_info) + list(model.graph.input) + list(model.graph.output):
+        if vi.type.HasField("tensor_type") and vi.type.tensor_type.HasField("shape"):
+            rank_map[vi.name] = len(vi.type.tensor_type.shape.dim)
+
+    for node in model.graph.node:
+        for attr in node.attribute:
+            if attr.name == "axis" and attr.i < 0:
+                input_name = node.input[0] if node.input else None
+                if input_name and input_name in rank_map:
+                    attr.i = rank_map[input_name] + attr.i
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".onnx", delete=False)
+    onnx.save(model, tmp.name)
+    return tmp.name
 
 
 class CalibrationImageDataset(Dataset):
@@ -113,7 +138,6 @@ def main():
         batch_size=args.batch_size,
         shuffle=False,  # Important: keep deterministic for calibration
         num_workers=0,
-        collate_fn=collate_fn,
         drop_last=False,
     )
 
@@ -125,18 +149,21 @@ def main():
     print(f"Quantizing {onnx_path} -> {output_path}")
     print(f"Calibration images: {len(dataset)}, batch_size={args.batch_size}, calib_steps={calib_steps}")
 
+    fixed_onnx = fix_negative_axes(str(onnx_path))
+    print(f"Preprocessed ONNX (fixed negative axes): {fixed_onnx}")
+
     # esp-ppq appends .espdl automatically — strip the extension if present
     export_stem = str(output_path.with_suffix("") if output_path.suffix == ".espdl" else output_path)
 
     espdl_quantize_onnx(
-        onnx_import_file=str(onnx_path),
+        onnx_import_file=fixed_onnx,
         espdl_export_file=export_stem,
         calib_dataloader=dataloader,
         calib_steps=calib_steps,
         input_shape=[1, 3, args.imgsz, args.imgsz],
         target=args.target,
         num_of_bits=args.bits,
-        collate_fn=collate_fn,
+        collate_fn=lambda x: x,
         device="cpu",
         error_report=not args.skip_error_report,
         skip_export=False,
