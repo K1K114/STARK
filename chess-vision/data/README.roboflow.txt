@@ -1,8 +1,8 @@
 
-STARK - v2 2026-04-19 1:44am
+STARK - v3 2026-04-19 3:35am
 ==============================
 
-This dataset was exported via roboflow.com on April 19, 2026 at 5:46 AM GMT
+This dataset was exported via roboflow.com on April 19, 2026 at 7:35 AM GMT
 
 Roboflow is an end-to-end computer vision platform that helps you
 * collaborate with your team on computer vision projects
@@ -17,7 +17,7 @@ visit https://github.com/roboflow/notebooks
 
 To find over 100k other datasets and pre-trained models, visit https://universe.roboflow.com
 
-The dataset includes 261 images.
+The dataset includes 345 images.
 STARK are annotated in YOLOv8 format.
 
 The following pre-processing was applied to each image:

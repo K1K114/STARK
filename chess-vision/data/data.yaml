@@ -8,6 +8,6 @@ names: ['orange_bishop', 'orange_king', 'orange_knight', 'orange_pawn', 'orange_
 roboflow:
   workspace: kikis-workspace-9rihu
   project: stark-47vov
-  version: 2
+  version: 3
   license: Private
-  url: https://app.roboflow.com/kikis-workspace-9rihu/stark-47vov/2
+  url: https://app.roboflow.com/kikis-workspace-9rihu/stark-47vov/3
