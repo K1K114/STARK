@@ -1,61 +1,36 @@
 """
-ESP32-P4 camera interface over USB serial.
+ESP32-P4 camera interface over WiFi HTTP.
 
 The P4 holds the camera and handles ALL vision processing (pixel diff + YOLO).
-The laptop only does game logic. Four commands:
+The laptop only does game logic. Four HTTP endpoints:
 
-    Laptop → P4:  b"SET_REFERENCE\\n"
-    P4 → Laptop:  "OK\\n"
-    (P4 captures current frame as move-detection baseline)
-
-    Laptop → P4:  b"POLL_MOVE\\n"
-    P4 → Laptop:  "NONE\\n"  or  "MOVE:e2e4\\n"
-    (non-blocking; P4 runs pixel diff + YOLO internally)
-
-    Laptop → P4:  b"INFER\\n"
-    P4 → Laptop:  "e1:white_king,e4:white_pawn,d8:black_queen\\n"
-    (full board YOLO snapshot)
-
-    Laptop → P4:  b"FRAME_REQUEST\\n"
-    P4 → Laptop:  [4-byte big-endian size] + [JPEG bytes]
-    (debug only — grab a raw frame for inspection)
+    POST /set_reference  →  "OK"
+    GET  /poll_move      →  "NONE" or "MOVE:e2e4"
+    GET  /infer          →  "e1:white_king,e4:white_pawn,..."
+    GET  /frame          →  raw JPEG bytes
 
 Usage:
-    p4 = P4Camera("/dev/tty.usbmodem1234")
-    p4.set_reference()              # call once at game start and after each engine move
-    move = p4.poll_move()           # returns "e2e4" or None
+    p4 = P4Camera("192.168.1.42")    # IP printed on P4 serial after boot
+    p4.set_reference()               # call once at game start and after each engine move
+    move = p4.poll_move()            # returns "e2e4" or None
     p4.close()
 """
 
-import struct
 import cv2
 import numpy as np
+import requests
 
 
 class P4Camera:
-    def __init__(self, port: str, baud: int = 921600, timeout: float = 3.0):
-        try:
-            import serial
-        except ImportError:
-            raise ImportError("pyserial not installed. Run: pip install pyserial")
-        import serial as _serial
-        self._ser = _serial.Serial(port, baud, timeout=timeout)
+    def __init__(self, host: str, timeout: float = 5.0):
+        self._base = f"http://{host}"
+        self._timeout = timeout
 
     def get_frame(self) -> np.ndarray:
-        """Ask P4 for the latest camera frame. Returns a BGR numpy array."""
-        self._ser.reset_input_buffer()
-        self._ser.write(b"FRAME_REQUEST\n")
-
-        size_bytes = self._ser.read(4)
-        if len(size_bytes) < 4:
-            raise RuntimeError("P4: timeout waiting for frame size header")
-
-        size = struct.unpack(">I", size_bytes)[0]
-        jpeg_data = self._ser.read(size)
-        if len(jpeg_data) < size:
-            raise RuntimeError(f"P4: expected {size} bytes, got {len(jpeg_data)}")
-
-        arr = np.frombuffer(jpeg_data, dtype=np.uint8)
+        """Fetch the latest camera frame from P4. Returns a BGR numpy array."""
+        r = requests.get(f"{self._base}/frame", timeout=self._timeout)
+        r.raise_for_status()
+        arr = np.frombuffer(r.content, dtype=np.uint8)
         frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         if frame is None:
             raise RuntimeError("P4: failed to decode JPEG frame")
@@ -65,39 +40,33 @@ class P4Camera:
         """Tell P4 to capture the current frame as the move-detection baseline.
         Call this after every engine move (once gantry finishes).
         """
-        self._ser.reset_input_buffer()
-        self._ser.write(b"SET_REFERENCE\n")
-        resp = self._ser.readline().decode("ascii", errors="replace").strip()
-        if resp != "OK":
-            raise RuntimeError(f"P4: SET_REFERENCE unexpected response: {resp!r}")
+        r = requests.post(f"{self._base}/set_reference", timeout=self._timeout)
+        r.raise_for_status()
+        if r.text.strip() != "OK":
+            raise RuntimeError(f"P4: set_reference unexpected response: {r.text!r}")
 
     def poll_move(self) -> str | None:
-        """Ask P4 if a human move has been detected since the last SET_REFERENCE.
+        """Ask P4 if a human move has been detected since the last set_reference.
 
         Returns a UCI string like 'e2e4' if a move was confirmed, or None if
         the board is still being watched. The P4 handles pixel diff, stability
         check, and YOLO disambiguation internally.
         """
-        self._ser.reset_input_buffer()
-        self._ser.write(b"POLL_MOVE\n")
-        line = self._ser.readline().decode("ascii", errors="replace").strip()
-        if not line or line == "NONE":
-            return None
-        if line.startswith("MOVE:"):
-            return line[5:].strip()
+        r = requests.get(f"{self._base}/poll_move", timeout=self._timeout)
+        r.raise_for_status()
+        text = r.text.strip()
+        if text.startswith("MOVE:"):
+            return text[5:]
         return None
 
     def infer(self) -> dict:
-        """Tell P4 to run inference. Returns {square: piece_name} dict."""
-        self._ser.reset_input_buffer()
-        self._ser.write(b"INFER\n")
-
-        line = self._ser.readline().decode("ascii", errors="replace").strip()
-        if not line:
-            return {}
-
+        """Tell P4 to run a full-board YOLO snapshot.
+        Returns {square: piece_name} dict, e.g. {"e1": "white_king"}.
+        """
+        r = requests.get(f"{self._base}/infer", timeout=self._timeout)
+        r.raise_for_status()
         board = {}
-        for item in line.split(","):
+        for item in r.text.strip().split(","):
             item = item.strip()
             if ":" not in item:
                 continue
@@ -106,8 +75,7 @@ class P4Camera:
         return board
 
     def close(self):
-        if self._ser.is_open:
-            self._ser.close()
+        pass
 
     def __enter__(self):
         return self

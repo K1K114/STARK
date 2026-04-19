@@ -225,6 +225,137 @@ class PieceDetector:
 
 
 # ------------------------------------------------------------------
+# Roboflow hosted detector (drop-in replacement for PieceDetector)
+# ------------------------------------------------------------------
+
+class RoboflowDetector:
+    """Same interface as PieceDetector, but runs inference via Roboflow's hosted API.
+
+    Uses model stark-47vov/3 (STARK 3 — YOLO, trained on orange + white pieces).
+    "orange_*" classes are normalized to "black_*" for the chess engine.
+
+    Usage:
+        detector = RoboflowDetector(api_key="...", calibration_path="calibration/calibration.json")
+        board = detector.get_board_state(frame)  # {"e1": "white_king", ...}
+    """
+
+    MODEL_ID = "stark-47vov/3"
+
+    def __init__(self, api_key: str, calibration_path="calibration/calibration.json"):
+        try:
+            from inference_sdk import InferenceHTTPClient
+        except ImportError:
+            raise ImportError("inference-sdk not installed. Run: pip install inference-sdk")
+
+        self._client = InferenceHTTPClient(
+            api_url="https://detect.roboflow.com",
+            api_key=api_key,
+        )
+
+        cal = load_calibration(calibration_path)
+        self.M = np.array(cal["transform_matrix"], dtype=np.float32)
+        self.board_size = cal["board_size"]
+        self._build_grid_map()
+
+    def _build_grid_map(self):
+        files = "abcdefgh"
+        ranks = "87654321"
+        self.grid_map = {}
+        for row, rank in enumerate(ranks):
+            for col, file in enumerate(files):
+                self.grid_map[(col, row)] = f"{file}{rank}"
+
+    def _pixel_to_square(self, x, y):
+        cell = self.board_size / 8
+        col = max(0, min(7, int(x // cell)))
+        row = max(0, min(7, int(y // cell)))
+        return self.grid_map.get((col, row))
+
+    def _raw_center_to_square(self, cx, cy):
+        pt = np.array([[[cx, cy]]], dtype=np.float32)
+        warped = cv2.perspectiveTransform(pt, self.M)
+        wx, wy = warped[0][0]
+        return self._pixel_to_square(wx, wy)
+
+    @staticmethod
+    def _normalize_class(label: str) -> str:
+        """Map orange_* → black_* so the chess engine sees standard color names."""
+        return label.replace("orange_", "black_")
+
+    def detect(self, frame: np.ndarray) -> list:
+        """Run Roboflow inference, return list of {square, piece, confidence} dicts."""
+        result = self._client.infer(frame, model_id=self.MODEL_ID)
+        raw_preds = result.get("predictions", [])
+        detections = []
+        for p in raw_preds:
+            cx = p.get("x", 0)
+            cy = p.get("y", 0)
+            label = self._normalize_class(p.get("class", ""))
+            conf = round(float(p.get("confidence", 0.0)), 3)
+            if not label:
+                continue
+            sq = self._raw_center_to_square(cx, cy)
+            if sq:
+                detections.append({"square": sq, "piece": label, "confidence": conf})
+        return detections
+
+    def get_board_state(self, frame: np.ndarray) -> dict:
+        """Return {square: piece_name} dict. Higher-confidence detection wins per square."""
+        detections = sorted(self.detect(frame), key=lambda d: d["confidence"])
+        board = {}
+        for d in detections:
+            board[d["square"]] = d["piece"]
+        return board
+
+    def detect_raw(self, frame: np.ndarray) -> list:
+        """Return raw pixel-space detections (for graveyard scanning)."""
+        result = self._client.infer(frame, model_id=self.MODEL_ID)
+        return [
+            {
+                "cx": p.get("x", 0),
+                "cy": p.get("y", 0),
+                "piece": self._normalize_class(p.get("class", "")),
+                "confidence": round(float(p.get("confidence", 0.0)), 3),
+            }
+            for p in result.get("predictions", [])
+            if p.get("class")
+        ]
+
+    def debug_board_view(self, frame: np.ndarray, detections: list = None) -> np.ndarray:
+        """Warped bird's-eye board view with grid and piece labels.
+        Pass detections from a previous detect() call to avoid a second API hit.
+        """
+        warped = cv2.warpPerspective(frame, self.M, (self.board_size, self.board_size))
+        out = warped.copy()
+        cell = self.board_size / 8
+        files = "abcdefgh"
+        ranks = "87654321"
+
+        for i in range(9):
+            pos = int(i * cell)
+            cv2.line(out, (pos, 0), (pos, self.board_size), (0, 255, 0), 1)
+            cv2.line(out, (0, pos), (self.board_size, pos), (0, 255, 0), 1)
+        for col, f in enumerate(files):
+            cv2.putText(out, f, (int(col * cell + cell / 2) - 5, 14),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1, cv2.LINE_AA)
+        for row, r in enumerate(ranks):
+            cv2.putText(out, r, (3, int(row * cell + cell / 2) + 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1, cv2.LINE_AA)
+
+        for d in (detections or []):
+            sq = d["square"]
+            col, row = files.index(sq[0]), ranks.index(sq[1])
+            cx, cy = int(col * cell + cell / 2), int(row * cell + cell / 2)
+            cv2.putText(out, d["piece"].replace("_", " "),
+                        (cx - int(cell * 0.45), cy - 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.28, (255, 255, 0), 1, cv2.LINE_AA)
+            cv2.putText(out, f"{d['confidence']:.2f}",
+                        (cx - int(cell * 0.45), cy + 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.25, (200, 200, 0), 1, cv2.LINE_AA)
+        return out
+
+
+# ------------------------------------------------------------------
 # Standalone test
 # ------------------------------------------------------------------
 

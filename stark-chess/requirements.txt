@@ -3,9 +3,11 @@ pyserial>=3.5
 opencv-python>=4.8.0
 numpy>=1.24.0
 python-dotenv>=1.0.0
+requests>=2.28.0
 
 # Vision deps (also installed in chess-vision, listed here for completeness)
 ultralytics>=8.0.0
+inference-sdk>=0.9.0
 
 # Voice (--voice / VoxCPM clone); omit if you only use --stub-voice
 voxcpm
