@@ -9,6 +9,11 @@ data/labels/
 data/*.zip
 data/*.tar.gz
 
+# PTQ calibration frames (generate locally; can be large)
+data/calibration_images/*
+!data/calibration_images/README.md
+!data/calibration_images/.gitkeep
+
 # Training artifacts
 runs/
 wandb/

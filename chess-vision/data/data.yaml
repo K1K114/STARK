@@ -2,12 +2,12 @@ train: ../train/images
 val: ../valid/images
 test: ../test/images
 
-nc: 13
-names: ['bishop', 'black-bishop', 'black-king', 'black-knight', 'black-pawn', 'black-queen', 'black-rook', 'white-bishop', 'white-king', 'white-knight', 'white-pawn', 'white-queen', 'white-rook']
+nc: 12
+names: ['orange_bishop', 'orange_king', 'orange_knight', 'orange_pawn', 'orange_queen', 'orange_rook', 'white_bishop', 'white_king', 'white_knight', 'white_pawn', 'white_queen', 'white_rook']
 
 roboflow:
-  workspace: joseph-nelson
-  project: chess-pieces-new
-  version: 24
-  license: Public Domain
-  url: https://universe.roboflow.com/joseph-nelson/chess-pieces-new/dataset/24
+  workspace: kikis-workspace-9rihu
+  project: stark-47vov
+  version: 2
+  license: Private
+  url: https://app.roboflow.com/kikis-workspace-9rihu/stark-47vov/2

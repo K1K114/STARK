@@ -27,7 +27,7 @@ def train():
     print(f"Training on dataset: {DATA_YAML}")
     model = YOLO(BASE_MODEL)
 
-    model.train(
+    results = model.train(
         data=str(DATA_YAML),
         epochs=EPOCHS,
         imgsz=IMG_SIZE,

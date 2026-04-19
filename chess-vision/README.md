@@ -30,6 +30,11 @@ chess-vision/
 ├── inference/
 │   ├── board_state.py      # contour-diff move detector (layer 1)
 │   └── detect.py           # YOLOv8 piece identifier (layer 2)
+├── quantization/
+│   ├── export_yolo_to_onnx.py       # export best.pt -> ONNX (320x320)
+│   ├── extract_calibration_frames.py # video -> stable JPEGs in data/calibration_images
+│   ├── quantize_to_espdl.py         # PTQ ONNX -> .espdl with esp-ppq
+│   └── validate_quantization.py     # size + smoke checks vs ONNX
 ├── training/
 │   ├── train.py            # download dataset + train YOLOv8
 │   ├── chess.yaml          # dataset config
@@ -143,6 +148,70 @@ Prints detected pieces and their squares, then shows the annotated frame.
 python inference/board_state.py  # not yet a standalone script — use tests instead
 python tests/test_detection.py
 ```
+
+---
+
+## Step 4 — Quantize for ESP32-P4
+
+Use this when moving inference from laptop to ESP32-P4.
+
+Collect calibration JPEGs (normal photos — PTQ does not use special “quantized” image files). Easiest path: record a game, then extract stable frames:
+
+```bash
+python quantization/extract_calibration_frames.py \
+  --video path/to/recording.mp4 \
+  --out-dir data/calibration_images \
+  --calibration calibration/calibration.json
+```
+
+See `data/calibration_images/README.md` for sources and git notes.
+
+Install quantization deps:
+
+```bash
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+pip install esp-ppq
+```
+
+Export the trained model to ONNX at `320x320`:
+
+```bash
+python quantization/export_yolo_to_onnx.py \
+  --weights model/best.pt \
+  --output model/chess_yolo_320.onnx \
+  --imgsz 320
+```
+
+Quantize ONNX to ESP-DL (`.espdl`) with calibration images:
+
+```bash
+python quantization/quantize_to_espdl.py \
+  --onnx model/chess_yolo_320.onnx \
+  --output model/chess_yolo_320_p4_int8.espdl \
+  --calib-dir data/calibration_images \
+  --imgsz 320 \
+  --calib-steps 150 \
+  --target esp32p4 \
+  --bits 8
+```
+
+Validate the export/quantization artifacts:
+
+```bash
+python quantization/validate_quantization.py \
+  --pt model/best.pt \
+  --onnx model/chess_yolo_320.onnx \
+  --espdl model/chess_yolo_320_p4_int8.espdl \
+  --sample-dir data/test/images \
+  --imgsz 320 \
+  --data-yaml data/data.yaml
+```
+
+Notes:
+- Use calibration images that were **not** used in training.
+- Keep `shuffle=False` in calibration dataloader for stable quantization error analysis.
+- `--target esp32p4 --bits 8` maps to ESP-DL INT8 export for P4.
+- The generated `.espdl` is flashed with your P4 inference firmware.
 
 ---
 

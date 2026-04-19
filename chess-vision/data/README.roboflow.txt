@@ -1,8 +1,8 @@
 
-Chess Pieces - v24 416x416_aug
+STARK - v2 2026-04-19 1:44am
 ==============================
 
-This dataset was exported via roboflow.com on January 19, 2023 at 6:47 AM GMT
+This dataset was exported via roboflow.com on April 19, 2026 at 5:46 AM GMT
 
 Roboflow is an end-to-end computer vision platform that helps you
 * collaborate with your team on computer vision projects
@@ -17,18 +17,18 @@ visit https://github.com/roboflow/notebooks
 
 To find over 100k other datasets and pre-trained models, visit https://universe.roboflow.com
 
-The dataset includes 693 images.
-Pieces are annotated in YOLOv8 format.
+The dataset includes 261 images.
+STARK are annotated in YOLOv8 format.
 
 The following pre-processing was applied to each image:
 * Auto-orientation of pixel data (with EXIF-orientation stripping)
-* Resize to 416x416 (Stretch)
+* Resize to 640x640 (Stretch)
 
-The following augmentation was applied to create 3 versions of each source image:
+The following augmentation was applied to create 10 versions of each source image:
 * 50% probability of horizontal flip
-* Randomly crop between 0 and 15 percent of the image
-* Random shear of between -6° to +6° horizontally and -6° to +6° vertically
-* Random brigthness adjustment of between -10 and +10 percent
-* Random exposure adjustment of between -10 and +10 percent
+* Random rotation of between -15 and +15 degrees
+* Random brigthness adjustment of between -25 and +25 percent
+* Random Gaussian blur of between 0 and 0.9 pixels
+* Salt and pepper noise was applied to 0.97 percent of pixels
 
 

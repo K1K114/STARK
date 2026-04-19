@@ -39,6 +39,14 @@ DIFF_THRESHOLD = 30
 # Ignore contours smaller than this area (filters sensor noise and reflections)
 MIN_CONTOUR_AREA = 400
 
+# Castling always involves exactly these 4 squares — hardcoded for reliability
+CASTLING_SQUARE_SETS = {
+    frozenset(["e1", "g1", "h1", "f1"]): "e1g1",  # white kingside
+    frozenset(["e1", "c1", "a1", "d1"]): "e1c1",  # white queenside
+    frozenset(["e8", "g8", "h8", "f8"]): "e8g8",  # black kingside
+    frozenset(["e8", "c8", "a8", "d8"]): "e8c8",  # black queenside
+}
+
 
 class BoardStateDetector:
     def __init__(self, calibration_path="calibration/calibration.json"):
@@ -92,32 +100,24 @@ class BoardStateDetector:
         self.stability_count = 0
         self.last_changed = frozenset()
 
-    def update(self, frame, gantry_moving=False):
+    def update(self, frame, gantry_moving=False, board=None):
         """Process a new camera frame.
 
         Args:
             frame: BGR frame from the webcam.
             gantry_moving: Set True while the electromagnet/gantry is active.
-                           The detector resets its stability counter so it
-                           doesn't misinterpret the gantry's movement as a
-                           human move.
+            board: Optional chess.Board at the current position. Used to
+                   disambiguate en passant (3 changed squares).
 
         Returns:
-            A UCI move string like "e2e4" when a stable human move is
-            detected, or None while still waiting.
-
-        Note:
-            The returned string is the two changed squares sorted
-            alphabetically. If the order matters (it does for python-chess),
-            try both orderings and pick the legal one:
-
-                sq_a, sq_b = move[:2], move[2:]
-                for uci in [move, sq_b + sq_a]:
-                    m = chess.Move.from_uci(uci)
-                    if board.is_legal(m): ...
+            A UCI move string when a stable move is detected, or None.
+            Special moves:
+              - Normal / capture: "e2e4" (two squares, sorted alphabetically —
+                parse_move tries both orderings)
+              - Castling: "e1g1" / "e1c1" / "e8g8" / "e8c8" (king's movement)
+              - En passant: "e5d6" style (from-sq + ep target, sorted)
         """
         if gantry_moving:
-            # Gantry is moving pieces — ignore all visual changes
             self.stability_count = 0
             self.last_changed = frozenset()
             return None
@@ -129,11 +129,9 @@ class BoardStateDetector:
         warped = self._warp(frame)
         gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
 
-        # Compute per-pixel absolute difference vs the reference
         diff = cv2.absdiff(gray, self.reference_frame)
         _, thresh = cv2.threshold(diff, DIFF_THRESHOLD, 255, cv2.THRESH_BINARY)
 
-        # Dilate to merge nearby noise into solid blobs
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
         thresh = cv2.dilate(thresh, kernel, iterations=2)
 
@@ -148,12 +146,10 @@ class BoardStateDetector:
             if sq:
                 changed_squares.add(sq)
 
+        move_str = self._interpret_changed_squares(changed_squares, board)
         changed_frozen = frozenset(changed_squares)
 
-        # Require exactly 2 changed squares (from-square + to-square).
-        # Captures also produce exactly 2 changes. En passant produces 3 —
-        # handled below by using the two most-changed squares.
-        if len(changed_squares) == 2:
+        if move_str is not None:
             if changed_frozen == self.last_changed:
                 self.stability_count += 1
             else:
@@ -161,13 +157,43 @@ class BoardStateDetector:
                 self.last_changed = changed_frozen
 
             if self.stability_count >= STABILITY_FRAMES:
-                squares_sorted = sorted(changed_squares)
-                move_str = squares_sorted[0] + squares_sorted[1]
-                self.set_reference(frame)  # update baseline to new board state
+                self.set_reference(frame)
                 return move_str
         else:
-            # Not exactly 2 squares — reset stability
             self.stability_count = 0
             self.last_changed = changed_frozen
+
+        return None
+
+    def _interpret_changed_squares(self, changed_squares, board=None):
+        """Map a set of changed squares to a UCI move string, or None.
+
+        Handles normal moves (2 squares), en passant (3 squares),
+        and castling (4 squares).
+        """
+        n = len(changed_squares)
+
+        if n == 2:
+            sq_a, sq_b = sorted(changed_squares)
+            return sq_a + sq_b
+
+        if n == 4:
+            # Castling: king + rook both move, producing exactly 4 changes
+            cast = CASTLING_SQUARE_SETS.get(frozenset(changed_squares))
+            if cast:
+                return cast
+
+        if n == 3 and board is not None and board.ep_square is not None:
+            import chess as _chess
+            ep_sq_name = _chess.square_name(board.ep_square)
+            if ep_sq_name in changed_squares:
+                # ep_square is the to-square; exclude the captured pawn's square
+                # (same file as ep_square, same rank as the moving pawn)
+                ep_file = ep_sq_name[0]
+                remaining = [sq for sq in changed_squares if sq != ep_sq_name]
+                # from-square is the one on a different file than the ep target
+                from_sq = next((sq for sq in remaining if sq[0] != ep_file), remaining[0])
+                sq_a, sq_b = sorted([from_sq, ep_sq_name])
+                return sq_a + sq_b
 
         return None
