@@ -48,7 +48,7 @@ class CalibrationImageDataset(Dataset):
 
 
 def collate_fn(batch):
-    return (torch.stack(batch, dim=0).to("cpu"),)
+    return [torch.stack(batch, dim=0).to("cpu")]
 
 
 def parse_args():
