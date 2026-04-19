@@ -21,7 +21,7 @@ EPOCHS = 10
 IMG_SIZE = 640
 BATCH_SIZE = 16
 BASE_MODEL = "yolov8s.pt"   # start with s; easier than m
-DEVICE = "gpu"                  # GPU 0
+DEVICE = "cpu"                  # GPU 0
 
 def train():
     print(f"Training on dataset: {DATA_YAML}")
