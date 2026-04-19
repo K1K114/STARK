@@ -21,7 +21,8 @@ REPO_ROOT = Path(__file__).parent.parent
 DATA_YAML = REPO_ROOT / "data" / "data.yaml"
 MODEL_DIR = REPO_ROOT / "model"
 
-EPOCHS = 100          # fine-tuning from pretrained weights; 100 is a safe minimum
+EPOCHS = 50
+PATIENCE = 15 # fine-tuning from pretrained weights; 100 is a safe minimum
 IMG_SIZE = 320        # match deployment size on P4 (quantization exports at 320)
 BATCH_SIZE = 16
 BASE_MODEL = "yolov8s.pt"
